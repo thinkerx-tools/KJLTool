@@ -490,6 +490,85 @@ label.check {
   color: var(--muted);
 }
 
+.compare-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 4px 0 8px;
+  line-height: 1.5;
+}
+
+.compare-only-diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text);
+}
+
+.compare-scroll {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #1e222a;
+}
+
+.compare-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.compare-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #252a34;
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compare-table th:first-child,
+.compare-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #252a34;
+  min-width: 88px;
+  max-width: 120px;
+}
+
+.compare-table thead th:first-child {
+  z-index: 3;
+}
+
+.compare-table tbody th,
+.compare-table tbody td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #2a303c;
+  vertical-align: top;
+  max-width: 140px;
+}
+
+.compare-table tr.is-diff th,
+.compare-table tr.is-diff td {
+  background: #3a3320;
+}
+
+.compare-table tr.is-diff th:first-child,
+.compare-table tr.is-diff td:first-child {
+  background: #423a24;
+}
+
+.compare-table tr.is-diff td {
+  color: var(--highlight);
+}
+
 #viewport {
   position: relative;
   width: 100%;

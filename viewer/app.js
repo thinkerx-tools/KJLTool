@@ -22,6 +22,7 @@ const state = {
   boardMeshes: new Map(),
   pickables: [],
   selectedId: null,
+  selectedIds: new Set(),
   selectedNodeKey: null,
   hiddenIds: new Set(),
   searchIndex: [],
@@ -36,7 +37,7 @@ const state = {
   treeRoots: [],
   treeCutters: [],
   performanceMode: false,
-  highlightPrev: { selectedId: null, searchIds: new Set() },
+  highlightPrev: { selectedIds: new Set(), searchIds: new Set() },
   renderLoopId: null,
   renderStopTimer: null,
   renderLoopActive: false,
@@ -594,6 +595,7 @@ function clearSceneContent() {
   state.boardMeshes.clear();
   state.boards = [];
   state.selectedId = null;
+  state.selectedIds.clear();
   state.selectedNodeKey = null;
   state.hiddenIds.clear();
   state.searchIndex = [];
@@ -608,7 +610,7 @@ function clearSceneContent() {
   state.treeRoots = [];
   state.treeCutters = [];
   state.pickables = [];
-  state.highlightPrev = { selectedId: null, searchIds: new Set() };
+  state.highlightPrev = { selectedIds: new Set(), searchIds: new Set() };
   state.materialCache.clear();
   clearInspector();
 }
@@ -935,13 +937,17 @@ function updateSearchMarkers(meshIds) {
 }
 
 function applyMeshHighlights() {
-  const selectedId = state.selectedId;
+  const selectedIds = state.selectedIds;
   const searchIds = state.searchMatchIds;
   const prev = state.highlightPrev;
   const affected = new Set();
 
-  if (prev.selectedId && prev.selectedId !== selectedId) affected.add(prev.selectedId);
-  if (selectedId) affected.add(selectedId);
+  for (const id of prev.selectedIds) {
+    if (!selectedIds.has(id)) affected.add(id);
+  }
+  for (const id of selectedIds) {
+    if (!prev.selectedIds.has(id)) affected.add(id);
+  }
   for (const id of prev.searchIds) {
     if (!searchIds.has(id)) affected.add(id);
   }
@@ -949,7 +955,10 @@ function applyMeshHighlights() {
     if (!prev.searchIds.has(id)) affected.add(id);
   }
 
-  if (!affected.size && prev.selectedId === selectedId && prev.searchIds.size === searchIds.size) {
+  const sameSelection =
+    prev.selectedIds.size === selectedIds.size &&
+    [...prev.selectedIds].every((id) => selectedIds.has(id));
+  if (!affected.size && sameSelection && prev.searchIds.size === searchIds.size) {
     return;
   }
 
@@ -960,7 +969,7 @@ function applyMeshHighlights() {
     if (!mesh) return;
     if (!mesh.userData._baseMat) mesh.userData._baseMat = mesh.material;
 
-    if (bid === selectedId) {
+    if (selectedIds.has(bid)) {
       if (!mesh.userData._hlMat) {
         const hl = mesh.userData._baseMat.clone();
         hl.emissive = new THREE.Color(0x665500);
@@ -981,7 +990,7 @@ function applyMeshHighlights() {
     }
   };
 
-  if (!prev.selectedId && !prev.searchIds.size && !selectedId && !searchIds.size) {
+  if (!prev.selectedIds.size && !prev.searchIds.size && !selectedIds.size && !searchIds.size) {
     for (const bid of state.boardMeshes.keys()) updateOne(bid);
   } else if (affected.size > state.boardMeshes.size * 0.6) {
     for (const bid of state.boardMeshes.keys()) updateOne(bid);
@@ -989,7 +998,7 @@ function applyMeshHighlights() {
     for (const bid of affected) updateOne(bid);
   }
 
-  prev.selectedId = selectedId;
+  prev.selectedIds = new Set(selectedIds);
   prev.searchIds = new Set(searchIds);
   requestRender();
 }
@@ -1108,11 +1117,9 @@ function focusSearchMatch(index) {
     updateSearchMarkers(meshIds);
     focusCameraOnMeshIds(meshIds, { minDist: 300 });
     if (item.meshIds[0]) {
-      state.selectedId = item.meshIds[0];
+      setSelectedIds([item.meshIds[0]], { primaryId: item.meshIds[0] });
       applyMeshHighlights();
-      el.tree.querySelectorAll('.tree-node, .tree-item').forEach((node) => {
-        node.classList.toggle('active', node.dataset.id === state.selectedId);
-      });
+      syncTreeSelectionUi();
     }
   } else if (item.node?.absBoundingBox) {
     const bb = item.node.absBoundingBox;
@@ -1120,7 +1127,9 @@ function focusSearchMatch(index) {
     focusBBoxString(raw);
   }
 
-  if (item.key && findNodeEntryByTreeKey(item.key)) {
+  if (item.meshIds.length > 1) {
+    showCompareInspector(item.meshIds.filter((id) => state.boardMeshes.has(id)));
+  } else if (item.key && findNodeEntryByTreeKey(item.key)) {
     showNodeInfoByTreeKey(item.key);
   } else if (item.meshIds[0]) {
     showNodeInfoByMeshId(item.meshIds[0]);
@@ -1265,7 +1274,153 @@ function renderParamRows(params) {
 function clearInspector() {
   state.selectedNodeKey = null;
   if (!el.inspectorBody) return;
-  el.inspectorBody.innerHTML = '<div class="inspector-empty">选中左侧树或场景中的节点以查看详情</div>';
+  el.inspectorBody.innerHTML = '<div class="inspector-empty">选中左侧树或场景中的节点以查看详情<br/>按住 Ctrl 可多选板件对比属性</div>';
+}
+
+function collectCompareProps(entry) {
+  const { node, meshId = '', extra = {} } = entry;
+  const name = nodePrimaryName(node);
+  const kind = extra.kind === 'slot' ? '开槽' : nodeTypeTag(node);
+  const size = node.size || node.boxSize || node.customSize;
+  const thickness = node.thickness ?? size?.z;
+  const holes = node.paramPlankPath?.holes?.length || 0;
+  const slots = node.paramPlankPath?.slots?.length || 0;
+  const bools = node.boolInterferenceModels?.length || 0;
+  const childCount = (node.subModels || []).filter((c) => c && !c.deleted && !c.ignore).length;
+
+  const props = [
+    ['名称', name || ''],
+    ['原始名', node.originalModelName && node.originalModelName !== name ? node.originalModelName : ''],
+    ['商品名', node.modelBrandGoodName && node.modelBrandGoodName !== name ? node.modelBrandGoodName : ''],
+    ['类型', kind],
+    ['ID', node.id ? String(node.id) : ''],
+    ['实例 ID', node.modelInstanceId ? String(node.modelInstanceId) : ''],
+    ['Mesh ID', meshId ? String(meshId) : ''],
+    ['编码', node.customCode || ''],
+    ['型号', node.modelNumber || node.modelBrandGoodCode || ''],
+    ['材质', node.textureName || ''],
+    ['材质编号', node.textureProductNumber || ''],
+    ['尺寸 (XYZ)', size ? formatVec3(size) : ''],
+    ['厚度', thickness != null ? String(roundNum(thickness)) : ''],
+    ['相对位置', node.position ? formatVec3(node.position) : ''],
+    ['绝对位置', node.absPosition ? formatVec3(node.absPosition) : ''],
+    ['旋转(度)', node.absRotationDegree ? formatDeg(node.absRotationDegree)
+      : (node.rotateDegree ? formatDeg(node.rotateDegree) : '')],
+    ['根模型', extra.rootName || ''],
+    ['宿主', extra.hostName || ''],
+    ['布尔模型', extra.boolModelName || ''],
+    ['子节点', childCount ? String(childCount) : ''],
+    ['孔位', holes ? String(holes) : ''],
+    ['开槽路径', slots ? String(slots) : ''],
+    ['布尔干涉', bools ? String(bools) : ''],
+  ];
+
+  for (const p of node.parameters || []) {
+    if (!p || typeof p !== 'object') continue;
+    const label = paramDisplayLabel(p);
+    if (!label) continue;
+    props.push([`参数 · ${label}`, paramDisplayValue(p) || '(空)']);
+  }
+  return props;
+}
+
+function showCompareInspector(ids) {
+  if (!el.inspectorBody) return;
+  const entries = ids
+    .map((id) => {
+      const entry = findNodeEntryByMeshId(id);
+      return entry?.node ? { id, entry } : null;
+    })
+    .filter(Boolean);
+
+  if (entries.length < 2) {
+    if (entries.length === 1) showNodeInfo(entries[0].entry);
+    else clearInspector();
+    return;
+  }
+
+  state.selectedNodeKey = null;
+
+  const propMaps = entries.map(({ entry }) => {
+    const map = new Map();
+    for (const [label, value] of collectCompareProps(entry)) {
+      map.set(label, value == null ? '' : String(value));
+    }
+    return map;
+  });
+
+  const labels = [];
+  const seen = new Set();
+  for (const map of propMaps) {
+    for (const label of map.keys()) {
+      if (seen.has(label)) continue;
+      seen.add(label);
+      labels.push(label);
+    }
+  }
+
+  const headers = entries.map(({ entry }, i) => {
+    const name = nodePrimaryName(entry.node) || `板件${i + 1}`;
+    return `<th title="${escapeHtml(name)}">${escapeHtml(name)}</th>`;
+  }).join('');
+
+  let diffCount = 0;
+  const rows = labels.map((label) => {
+    const values = propMaps.map((map) => map.get(label) || '');
+    const allEmpty = values.every((v) => !v);
+    if (allEmpty) return '';
+    const same = values.every((v) => v === values[0]);
+    if (!same) diffCount += 1;
+    const cells = values
+      .map((v) => `<td>${escapeHtml(v || '—')}</td>`)
+      .join('');
+    return `<tr class="${same ? 'is-same' : 'is-diff'}"><th>${escapeHtml(label)}</th>${cells}</tr>`;
+  }).filter(Boolean).join('');
+
+  el.inspectorBody.innerHTML = [
+    `<div class="inspector-title">板件对比<span class="tag">${entries.length} 块</span></div>`,
+    `<div class="compare-meta">差异 ${diffCount} 项 · 按住 Ctrl 继续加减选 · <label class="compare-only-diff"><input type="checkbox" id="compareOnlyDiff" /> 仅显示差异</label></div>`,
+    `<div class="compare-scroll"><table class="inspector-table compare-table"><thead><tr><th>属性</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`,
+  ].join('');
+
+  const onlyDiff = el.inspectorBody.querySelector('#compareOnlyDiff');
+  onlyDiff?.addEventListener('change', () => {
+    const hideSame = onlyDiff.checked;
+    el.inspectorBody.querySelectorAll('tr.is-same').forEach((tr) => {
+      tr.style.display = hideSame ? 'none' : '';
+    });
+  });
+}
+
+function showSelectionInspector() {
+  const ids = [...state.selectedIds];
+  if (!ids.length) {
+    clearInspector();
+    return;
+  }
+  if (ids.length === 1) {
+    showNodeInfoByMeshId(ids[0]);
+    return;
+  }
+  showCompareInspector(ids);
+}
+
+function syncTreeSelectionUi() {
+  el.tree.querySelectorAll('.tree-node, .tree-item, .tree-root-title').forEach((node) => {
+    const id = node.dataset.id;
+    if (id) node.classList.toggle('active', state.selectedIds.has(id));
+    else node.classList.remove('active');
+  });
+}
+
+function setSelectedIds(ids, { primaryId = null } = {}) {
+  state.selectedIds.clear();
+  for (const id of ids) {
+    if (id && state.boardMeshes.has(id)) state.selectedIds.add(id);
+  }
+  state.selectedId = primaryId && state.selectedIds.has(primaryId)
+    ? primaryId
+    : ([...state.selectedIds].at(-1) || null);
 }
 
 function showNodeInfo(entry) {
@@ -1434,6 +1589,7 @@ function setMeshesHidden(ids, hidden) {
 }
 
 function getSelectedHideIds() {
+  if (state.selectedIds.size) return [...state.selectedIds];
   if (state.selectedNodeKey) {
     const ids = state.descendantMeshIds.get(state.selectedNodeKey);
     if (ids?.length) return [...ids];
@@ -1619,6 +1775,7 @@ function renderTree(roots, boards, cutters = []) {
   el.tree.innerHTML = parts.join('') || '<div class="meta">无节点</div>';
   applyHiddenState();
   syncSearchTreeUi();
+  syncTreeSelectionUi();
 }
 
 function focusBBoxString(raw) {
@@ -1643,13 +1800,23 @@ function focusBBoxString(raw) {
   return true;
 }
 
-function selectBoard(id) {
-  state.selectedId = id;
-  applyMeshHighlights();
+function selectBoard(id, { additive = false } = {}) {
+  if (!id || !state.boardMeshes.has(id)) return;
 
-  const entry = findNodeEntryByMeshId(id);
+  if (additive) {
+    if (state.selectedIds.has(id)) state.selectedIds.delete(id);
+    else state.selectedIds.add(id);
+    state.selectedId = state.selectedIds.has(id)
+      ? id
+      : ([...state.selectedIds].at(-1) || null);
+  } else {
+    setSelectedIds([id], { primaryId: id });
+  }
+
+  const focusId = additive ? id : state.selectedId;
+  const entry = focusId ? findNodeEntryByMeshId(focusId) : null;
   if (entry) {
-    const treeKey = treeNodeKey(entry.node, id);
+    const treeKey = treeNodeKey(entry.node, focusId);
     if (treeKey) {
       const before = state.treeExpanded.size;
       expandTreePathToKey(treeKey);
@@ -1659,28 +1826,34 @@ function selectBoard(id) {
     }
   }
 
-  el.tree.querySelectorAll('.tree-node, .tree-item, .tree-root-title').forEach((node) => {
-    node.classList.toggle('active', node.dataset.id === id);
-  });
-  showNodeInfoByMeshId(id);
+  applyMeshHighlights();
+  syncTreeSelectionUi();
+  showSelectionInspector();
+
+  const count = state.selectedIds.size;
+  if (count > 1) setStatus(`已多选 ${count} 块板件，右侧可对比属性`);
+  else if (count === 1) setStatus(`已选中 1 块板件`);
+  else setStatus('已取消选中');
   requestRender();
 }
 
-function selectTreeNode(row) {
+function selectTreeNode(row, { additive = false } = {}) {
   if (!row) return;
   const treeKey = row.dataset.nodeKey || '';
 
-  el.tree.querySelectorAll('.tree-node, .tree-item, .tree-root-title').forEach((node) => {
-    node.classList.toggle('active', node === row);
-  });
-
   if (row.dataset.id) {
-    selectBoard(row.dataset.id);
+    selectBoard(row.dataset.id, { additive });
     return;
   }
 
+  if (additive) return;
+
   state.selectedId = null;
+  state.selectedIds.clear();
   applyMeshHighlights();
+  el.tree.querySelectorAll('.tree-node, .tree-item, .tree-root-title').forEach((node) => {
+    node.classList.toggle('active', node === row);
+  });
   if (treeKey) {
     expandTreePathToKey(treeKey);
     showNodeInfoByTreeKey(treeKey);
@@ -1768,7 +1941,7 @@ function initThree() {
     const hits = raycaster.intersectObjects(state.pickables, false);
     if (hits.length) {
       const pickId = hits[0].object.userData.pickId;
-      if (pickId) selectBoard(pickId);
+      if (pickId) selectBoard(pickId, { additive: ev.ctrlKey || ev.metaKey });
     }
   });
 
@@ -1886,16 +2059,15 @@ function bindUi() {
 
     const item = ev.target.closest('.tree-node, .tree-item, .tree-root-title');
     if (item) {
-      selectTreeNode(item);
+      selectTreeNode(item, { additive: ev.ctrlKey || ev.metaKey });
     }
   });
 
   el.inspectorCloseBtn?.addEventListener('click', () => {
     state.selectedId = null;
+    state.selectedIds.clear();
     applyMeshHighlights();
-    el.tree.querySelectorAll('.tree-node, .tree-item, .tree-root-title').forEach((n) => {
-      n.classList.remove('active');
-    });
+    syncTreeSelectionUi();
     clearInspector();
     requestRender();
   });
